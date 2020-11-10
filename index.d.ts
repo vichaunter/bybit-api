@@ -1,6 +1,6 @@
 import {RestClient} from "./types/rest-client";
 import {WebsocketClient} from "./types/websocket-client";
-import DefaultLogger = require("./types/logger");
+import DefaultLogger from "./types/logger";
 
 export {
   RestClient,

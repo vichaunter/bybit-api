@@ -219,7 +219,6 @@ export class WebsocketClient extends EventEmitter {
     } else if (this.isSpot()) {
       // TODO: spot client
       this.restClient = new LinearClient(undefined, undefined, this.isLivenet(), this.options.restOptions, this.options.requestOptions);
-      this.connectPublic();
     } else {
       this.restClient = new InverseClient(undefined, undefined, this.isLivenet(), this.options.restOptions, this.options.requestOptions);
     }
@@ -396,13 +395,15 @@ export class WebsocketClient extends EventEmitter {
       this.logger.debug('Getting auth\'d request params', { ...loggerCategory, wsKey });
 
       const timeOffset = await this.restClient.getTimeOffset();
+      const expires = Date.now() + timeOffset + 5000;
+      const signature = await signMessage('GET/realtime' + expires, secret);
 
       const params: any = {
         api_key: this.options.key,
-        expires: (Date.now() + timeOffset + 5000)
+        expires: expires,
+        signature: signature
       };
 
-      params.signature = await signMessage('GET/realtime' + params.expires, secret);
       return '?' + serializeParams(params);
 
     } else if (!key || !secret) {
@@ -520,7 +521,7 @@ export class WebsocketClient extends EventEmitter {
     return ws;
   }
 
-  private onWsOpen(event, wsKey: WsKey) {
+  private async onWsOpen(event, wsKey: WsKey) {
     if (this.wsStore.isConnectionState(wsKey, READY_STATE_CONNECTING)) {
       this.logger.info('Websocket connected', { ...loggerCategory, wsKey, livenet: this.isLivenet(), linear: this.isLinear(), spot: this.isSpot() });
       this.emit('open', { wsKey, event });
@@ -536,6 +537,10 @@ export class WebsocketClient extends EventEmitter {
       this.requestSubscribeTopics(wsKey, [...this.wsStore.getTopics(wsKey)]);
     }
 
+    if (wsKey === 'spotPrivate') {
+      await this.authenticatePrivateSpot();
+    }
+
     this.wsStore.get(wsKey, true)!.activePingTimer = setInterval(
       () => this.ping(wsKey),
       this.options.pingInterval
@@ -545,10 +550,22 @@ export class WebsocketClient extends EventEmitter {
   private onWsMessage(event, wsKey: WsKey) {
     try {
       const msg = JSON.parse(event && event.data || event);
-      if ('success' in msg || msg?.pong) {
+      if ('success' in msg || msg?.pong || msg?.ping) {
         this.onWsMessageResponse(msg, wsKey);
+      } else if (msg?.auth) {
+        if (msg?.auth === 'success') {
+          this.logger.info('Authenticated', { ...loggerCategory, wsKey });
+        } else {
+          this.logger.warning('Fail to authenticated', { ...loggerCategory, message: msg, event, wsKey});
+        }
       } else if (msg.topic) {
         this.onWsMessageUpdate(msg);
+      } else if (Array.isArray(msg)) {
+        for (const item of msg) {
+          if (['outboundAccountInfo', 'executionReport', 'ticketInfo'].includes(item.e)) {
+            this.onWsMessageUpdate(msg);
+          }
+        }
       } else {
         this.logger.warning('Got unhandled ws message', { ...loggerCategory, message: msg, event, wsKey});
       }
@@ -646,6 +663,21 @@ export class WebsocketClient extends EventEmitter {
 
   private wrongMarketError(market: APIMarket) {
     return new Error(`This WS client was instanced for the ${this.options.market} market. Make another WebsocketClient instance with "market: '${market}' to listen to spot topics`);
+  }
+
+  private async authenticatePrivateSpot() {
+    const { key, secret } = this.options;
+
+    if (key && secret) {
+      const timeOffset = await this.restClient.getTimeOffset();
+      const expires = Date.now() + timeOffset + 5000;
+      const signature = await signMessage('GET/realtime' + expires, secret);
+
+      this.tryWsSend(wsKeySpotPrivate, JSON.stringify({
+        op: 'auth',
+        args: [key, expires, signature]
+      }));
+    }
   }
 
   // TODO: persistance for subbed topics. Look at ftx-api implementation.

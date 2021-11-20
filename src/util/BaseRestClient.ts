@@ -80,6 +80,11 @@ export default abstract class BaseRestClient {
    * @private Make a HTTP request to a specific endpoint. Private endpoints are automatically signed.
    */
   private async _call(method: Method, endpoint: string, params?: any, isPublicApi?: boolean): GenericAPIResponse {
+    if (params) {
+      // Filter undefined values
+      params = Object.entries(params).reduce((a, [k, v]) => (v === undefined ? a : (a[k]=v, a)), {});
+    }
+    
     if (!isPublicApi) {
       if (!this.key || !this.secret) {
         throw new Error('Private endpoints require api and private keys set');
@@ -99,7 +104,7 @@ export default abstract class BaseRestClient {
       json: true
     };
 
-    if (method === 'GET') {
+    if (method === 'GET' || endpoint.includes('spot')) {
       options.params = params;
     } else {
       options.data = params;
